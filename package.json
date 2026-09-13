@@ -1,0 +1,16 @@
+{
+  "name": "sabi",
+  "version": "0.2.0",
+  "description": "sabi — minimalistic vim clone",
+  "bin": {
+    "sabi": "./bin/sabi.js"
+  },
+  "main": "src/index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "Ahmed Belmehnouf",
+  "license": "ISC",
+  "type": "commonjs"
+}
