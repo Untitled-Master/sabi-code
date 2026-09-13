@@ -4,8 +4,6 @@ Fast, zero-dependency terminal file explorer + editor. Pure Node.js stdlib, Comm
 
 ## Screenshots
 
-> Drop screenshots in `assets/screenshots/` and they will show up here.
-
 | Browse | Edit |
 | --- | --- |
 | ![browse](assets/screenshots/browse.png) | ![edit](assets/screenshots/edit.png) |
