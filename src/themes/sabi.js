@@ -8,5 +8,5 @@ module.exports = {
   // VSCode Dark+ palette
   comment: hexFg('#6A9955'), str: hexFg('#CE9178'), num: hexFg('#B5CEA8'),
   kw: hexFg('#569CD6'), fn: hexFg('#DCDCAA'), type: hexFg('#4EC9B0'),
-  bool: hexFg('#569CD6'), prop: hexFg('#9CDCFE'), pun: hexFg('#808080'),
+  bool: hexFg('#569CD6'), prop: hexFg('#9CDCFE'), var: hexFg('#9CDCFE'), pun: hexFg('#808080'),
 };

@@ -13,8 +13,10 @@ const settings = require('./settings');
 const git = require('./git');
 const discord = require('./discord');
 const ui = require('./ui');
+const term = require('./term');
 
 function quit() {
+  term.termDispose();
   discord.stopPresence();
   process.stdout.write(`\x1b[?25h\x1b[0m${SYNC_OFF}\x1b[2J\x1b[H`);
   process.exit(0);
@@ -102,6 +104,26 @@ function feedKey(key) {
 function onKey(key) {
   // ctrl-b toggles the files pane — global, works in every mode
   if (key === '\x02') return explorer.toggleFiles();
+  // ctrl-t toggles the terminal; ctrl+shift+t opens a new tab. Note:
+  // most terminals report ctrl+shift+t identically to ctrl-t (plain
+  // \x14), so the new-tab chord only fires where the terminal sends the
+  // distinct CSI-u sequence (Kitty-protocol mode). Both work in
+  // browse/edit/term (yes, typing mode too); swallowed elsewhere so they
+  // never land in a text buffer.
+  if (key === '\x14' || key === '\x1b[116;6u') {
+    if (state.dialog) return;
+    if (state.mode === 'browse' || state.mode === 'edit' || state.mode === 'term') {
+      if (key === '\x1b[116;6u') return editor.editNewEmptyTab();
+      return term.termToggle();
+    }
+    return;
+  }
+  // ctrl-n opens a new tab (browse/edit); swallowed elsewhere
+  if (key === '\x0e') {
+    if (state.dialog) return;
+    if (state.mode === 'browse' || state.mode === 'edit') return editor.editNewEmptyTab();
+    return;
+  }
   // confirm dialogs capture everything except their own answers
   if (state.dialog) {
     if (explorer.dialogKey(key) === 'quit') return quit();
@@ -113,6 +135,8 @@ function onKey(key) {
   if (state.mode === 'git') { git.gitKey(key); return; }
   // edit mode: everything goes to the buffer
   if (state.mode === 'edit') { editor.editKey(key); return; }
+  // terminal pane focused: everything goes to the shell
+  if (state.mode === 'term') { term.termKey(key); return; }
   // input mode: filename prompt (`n`) or discord client-id prompt — see
   // state.inputKind. Typing is shared; confirm/cancel depend on the owner.
   if (state.mode === 'input') {
@@ -148,6 +172,10 @@ function onKey(key) {
   if (key === '\u001b') return explorer.requestQuit(); // esc asks first
   if (key === '\x1b\x06') return grep.grepOpen(); // ctrl+alt+f: search all files
   if (key === '\r' || key === 'l' || key === '\u001b[C') return explorer.enterSelected();
+  if (key === '\x17') return editor.closeTab(); // ctrl-w: close tab
+  if (key === '\x1b[Z') return editor.nextTab(1); // shift+tab: cycle tabs
+  const tabJump = editor.tabIndexFromKey(key, false); // shift+1..9 / alt+1..9
+  if (tabJump >= 0) return editor.switchTab(tabJump);
   if (key === '\u007f' || key === 'h' || key === '\u001b[D') return explorer.goUp();
   if (key === 'j' || key === '\u001b[B') return explorer.move(1);
   if (key === 'k' || key === '\u001b[A') return explorer.move(-1);

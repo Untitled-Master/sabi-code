@@ -5,7 +5,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { execFileSync } = require('node:child_process');
 const { state, edit } = require('./state');
-const { RESET, BOLD, WHITE, SYNC_ON, SYNC_OFF, stripAnsi, padVis } = require('./ansi');
+const { RESET, BOLD, DIM, WHITE, SYNC_ON, SYNC_OFF, stripAnsi, padVis } = require('./ansi');
 const { currentTheme } = require('./themes');
 const { highlight } = require('./highlight');
 const { langOf } = require('./highlight/lang');
@@ -14,6 +14,9 @@ const editor = require('./editor');
 const grep = require('./grep');
 const git = require('./git');
 const settings = require('./settings');
+const icons = require('./icons');
+const complete = require('./complete');
+const diagnose = require('./diagnose');
 
 function size() {
   return {
@@ -51,6 +54,16 @@ function render() {
   if (state.mode === 'git') return git.renderGit();
   const T = currentTheme();
   const { cols, rows, leftW, rightX, rightW, listH } = paneGeometry();
+  // embedded terminal (ctrl-t): steals the lower half of the right pane.
+  // The left list keeps full height; preview/edit shrink to viewH.
+  const t = state.term;
+  const termOpen = !!(t && t.open);
+  const viewH = termOpen ? Math.max(6, Math.ceil(listH / 2)) : listH;
+  const termTop = 2 + viewH; // divider row
+  const termRows = listH - viewH; // divider + content rows
+  // tabs live on the top bar (row 1, right side, above the code) — both
+  // panes keep their full height no matter how many tabs are open
+  const tabList = editor.tabEntries();
 
   // keep selection in view
   if (state.sel < state.scroll) state.scroll = state.sel;
@@ -59,15 +72,26 @@ function render() {
   let out = `${SYNC_ON}\x1b[?25l\x1b[H`; // atomic frame; hide cursor, home (never full-clear: 2J flashes blank)
   out += wipeShrunk(rows);
 
-  // top bar: cwd + counter
+  // top bar: cwd (left) + tabs (right, above the code) + counter (far right)
   const counter = state.entries.length ? `[${state.sel + 1}/${state.entries.length}]` : '[0/0]';
-  const cwdDisp = state.cwd.length > cols - counter.length - 2
-    ? '…' + state.cwd.slice(-(cols - counter.length - 3))
+  const hasTabs = tabList.length > 0;
+  // tabs start where the code pane starts (or after cwd when it is hidden)
+  const cwdMax = hasTabs && state.showFiles
+    ? Math.max(8, rightX - 3)
+    : cols - counter.length - 2;
+  const cwdDisp = state.cwd.length > cwdMax
+    ? '…' + state.cwd.slice(-(cwdMax - 1))
     : state.cwd;
+  const tabX = hasTabs && !state.showFiles ? cwdDisp.length + 2 : rightX;
+  const tabsAvail = Math.max(0, cols - tabX - counter.length - 1);
   out += `\x1b[1;1H\x1b[2K${BOLD}${T.path}${cwdDisp}${RESET}`;
+  if (hasTabs) out += drawTabRow(T, tabX, tabsAvail, tabList);
   out += `\x1b[1;${Math.max(1, cols - counter.length + 1)}H${T.counter}${counter}${RESET}`;
 
   // left list (skipped entirely when the files pane is hidden)
+  // icon prefixes steal a few columns when on (nerd: 2, badge: 5)
+  const iconPad = icons.prefixWidth();
+  const nameW = iconPad ? Math.max(8, leftW - iconPad) : leftW;
   for (let i = 0; i < listH && leftW > 0; i++) {
     const idx = state.scroll + i;
     const row = 2 + i;
@@ -79,19 +103,20 @@ function render() {
     }
     const e = state.entries[idx];
     let name = e.name;
-    if (name.length > leftW) name = name.slice(0, leftW - 1) + '…';
+    if (name.length > nameW) name = name.slice(0, nameW - 1) + '…';
     // NOTE: cursor must be back at column 1 before writing the name —
     // otherwise it lands in the preview area and gets overwritten.
     if (idx === state.sel) {
-      out += `\x1b[${row};1H${T.selBg}${T.selFg}${name.padEnd(leftW)}${RESET}`;
+      const pre = icons.rowPrefix(e, null, { bg: T.selBg, fg: T.selFg });
+      out += `\x1b[${row};1H${pre}${T.selBg}${T.selFg}${name.padEnd(nameW)}${RESET}`;
     } else if (e.isDir) {
-      out += `\x1b[${row};1H${T.dir}${name}${RESET}`;
+      out += `\x1b[${row};1H${icons.rowPrefix(e, T.dir, null)}${T.dir}${name}${RESET}`;
     } else if (e.isLink) {
-      out += `\x1b[${row};1H${T.link}${name}${RESET}`;
+      out += `\x1b[${row};1H${icons.rowPrefix(e, T.link, null)}${T.link}${name}${RESET}`;
     } else if (e.isExec) {
-      out += `\x1b[${row};1H${T.exec}${name}${RESET}`;
+      out += `\x1b[${row};1H${icons.rowPrefix(e, T.exec, null)}${T.exec}${name}${RESET}`;
     } else {
-      out += `\x1b[${row};1H${WHITE}${name}${RESET}`;
+      out += `\x1b[${row};1H${icons.rowPrefix(e, WHITE, null)}${WHITE}${name}${RESET}`;
     }
     out += `\x1b[${row};${rightX - 1}H${T.divider}│${RESET}`;
   }
@@ -100,18 +125,21 @@ function render() {
   // (hlState carries block comments / triple-strings / fences across lines)
   const selEntry = state.entries[state.sel];
   const selFile = selEntry && !selEntry.isDir ? selEntry.full : null;
-  const editing = state.mode === 'edit' && edit.file;
-  const lines = editing ? [] : explorer.previewLines(listH, Math.max(10, rightW));
+  // terminal focused after editing keeps the editor buffer on top (returnMode),
+  // otherwise the right pane falls back to the file preview
+  const editing = state.mode === 'edit' ||
+    (state.mode === 'term' && t && t.returnMode === 'edit' && edit.tabs.length > 0);
+  const lines = editing ? [] : explorer.previewLines(viewH, Math.max(10, rightW));
   const hlState = {};
   let editCtx = null;
   let textW = rightW;
   if (editing) {
     // gutter steals a few columns; the text pane (and its scrolling) adapt
     textW = Math.max(10, rightW - editor.editGutterWidth());
-    editor.ensureEditVisible(listH, textW);
+    editor.ensureEditVisible(viewH, textW);
     editCtx = { file: edit.file, lang: langOf(edit.file), st: editor.computeHlState(edit.lines, edit.file, edit.scroll) };
   }
-  for (let i = 0; i < listH; i++) {
+  for (let i = 0; i < viewH; i++) {
     const row = 2 + i;
     if (row > rows - 1) break;
     out += `\x1b[${row};${rightX}H\x1b[K`; // position + clear to end of line
@@ -126,10 +154,27 @@ function render() {
     const txt = typeof line === 'string' ? line : line.text;
     const isDir = typeof line === 'object' && line.isDir;
     const rawClip = txt.length > rightW ? txt.slice(0, rightW - 1) + '…' : txt;
-    if (isDir) out += `${T.dir}${rawClip}${RESET}`;
+    if (isDir) {
+      const pre = icons.rowPrefix({ name: txt, isDir: true }, T.dir, null);
+      if (!pre) {
+        out += `${T.dir}${rawClip}${RESET}`;
+      } else {
+        const w = Math.max(8, rightW - icons.prefixWidth());
+        const clip = txt.length > w ? txt.slice(0, w - 1) + '…' : txt;
+        out += `${pre}${T.dir}${clip}${RESET}`;
+      }
+    }
     else if (selFile && txt[0] !== '(') out += highlight(rawClip, selFile, hlState);
     else out += rawClip;
   }
+
+  // embedded terminal below the preview/edit area
+  if (termOpen) out += drawTerm(T, rightX, rightW, termTop, termRows);
+
+  // autocomplete popup floats above everything in the code area
+  const cmpView = editing && !edit.find ? complete.view() : null;
+  if (cmpView) out += drawComplete(T, rightX, rightW, rows, cmpView);
+  else if (lastCmpRect) { out += eraseCmpRect(); lastCmpRect = null; }
 
   // modal confirm dialog floats above everything (drawn before status bar)
   if (state.dialog) out += drawDialog(T, cols, rows);
@@ -139,7 +184,7 @@ function render() {
     const prompt = state.inputKind === 'discordId' ? 'discord client id: ' : 'new (end with / for folder): ';
     const buf = state.inputBuf.slice(Math.max(0, state.inputBuf.length - Math.max(0, cols - prompt.length - 2)));
     out += `\x1b[${rows};1H\x1b[2K${T.status}${prompt}${RESET}${BOLD}${WHITE}${buf}${RESET}${WHITE}█${RESET}`;
-  } else if (state.mode === 'edit' && edit.file) {
+  } else if (state.mode === 'edit') {
     let label;
     if (edit.find) {
       const n = edit.find.matches.length;
@@ -154,13 +199,26 @@ function render() {
       const text = edit.lines.join('\n');
       const pct = Math.round(((edit.row + 1) / edit.lines.length) * 100);
       const stats = `ln ${edit.row + 1}/${edit.lines.length} · ${pct}% · col ${edit.col + 1} · ${(text.match(/\S+/g) || []).length}w · ${[...text].length}ch · ${fmtSize(Buffer.byteLength(text, 'utf8'))}`;
-      const base = `✎ ${edit.file}${edit.dirty ? ' ●' : ''}`;
+      const tabTag = edit.tabs.length > 1 ? `[${edit.tabIdx + 1}/${edit.tabs.length}] ` : '';
+      const base = edit.file
+        ? `${tabTag}✎ ${edit.file}${edit.dirty ? ' ●' : ''}`
+        : `${tabTag}+ new tab (empty)${edit.dirty ? ' ●' : ''}`; // untitled (ctrl-shift-t) tab
       const maxBase = Math.max(8, cols - stats.length - 3);
       const disp = base.length > maxBase ? '…' + base.slice(-(maxBase - 1)) : base;
       label = `${disp} · ${stats}`;
+      // problems: count always, message for the one under the cursor (hover)
+      const diags = diagnose.forBuffer();
+      if (diags.length) {
+        label += ` · ${diags.length} problem${diags.length === 1 ? '' : 's'}`;
+        const cur = diagnose.diagAtCursor(diags, edit.row, edit.col);
+        if (cur) label += ` · ${cur.sev === 'err' ? '✖' : '⚠'} ${cur.msg}`;
+      }
     }
     if (label.length > cols) label = '…' + label.slice(-(cols - 1));
     out += `\x1b[${rows};1H\x1b[2K${T.status}${label}${RESET}`;
+  } else if (state.mode === 'term') {
+    const help = 'enter run · up/down history · tab complete · pgup/pgdn scroll · ctrl-c stop · esc back · ctrl-t close';
+    out += `\x1b[${rows};1H\x1b[2K${T.status}${help.slice(0, cols)}${RESET}`;
   } else {
     // browse bar: path + help/message on the left, git info pinned far right.
     // The path shrinks first so message + git stay visible when narrow.
@@ -253,6 +311,175 @@ function gitInfo(dir) {
   return info;
 }
 
+// tab row (row 1, right side above the code, only when tabs are open):
+// ` 1:file●  2:other ` cells, active tab in selection colors. Long names
+// shrink; overflow windows around the active tab with ‹ › markers. The
+// caller already cleared the line — cells pad to availW with spaces so a
+// shorter tab row always erases the previous frame's.
+function drawTabRow(T, tabX, availW, tabs) {
+  if (availW <= 0) return '';
+  const cols = availW;
+  let out = `\x1b[1;${tabX}H`;
+  let used = 0;
+  // file-type icon rides in brand colors; the selection bg is preserved by
+  // re-applying the cell fg after it (never RESET mid-cell). `text` stays
+  // plain for the width math below (ANSI adds zero visible columns).
+  const cells = tabs.map((t, i) => {
+    let base = t.file ? path.basename(t.file) : '(untitled)';
+    if (base.length > 16) base = base.slice(0, 15) + '…';
+    const active = !!t.active;
+    const label = ` ${i + 1}:${base}${t.dirty ? '●' : ''} `;
+    const icon = icons.tabIcon(t.file, base, T, active);
+    const at = label.indexOf(':') + 1;
+    return { text: ` ${i + 1}:${icons.tabPrefix(t.file, base)}${base}${t.dirty ? '●' : ''} `, rich: label.slice(0, at) + icon + label.slice(at), active };
+  });
+  let lo = 0;
+  let hi = cells.length;
+  const width = (a, b) => cells.slice(a, b).reduce((n, c) => n + c.text.length + 1, 0);
+  if (width(0, cells.length) > cols) {
+    const ai = Math.max(0, cells.findIndex((c) => c.active));
+    lo = ai; hi = ai + 1;
+    while (lo > 0 && width(lo - 1, hi) <= cols - 2) lo--;
+    while (hi < cells.length && width(lo, hi + 1) <= cols - 2) hi++;
+  }
+  if (lo > 0) { out += `${T.status}‹${RESET}`; used += 1; }
+  for (let i = lo; i < hi; i++) {
+    const c = cells[i];
+    out += c.active ? `${T.selBg}${T.selFg}${c.rich}${RESET} ` : `${T.status}${c.rich}${RESET} `;
+    used += c.text.length + 1;
+  }
+  if (hi < cells.length) { out += `${T.status}›${RESET}`; used += 1; }
+  if (used < cols) out += ' '.repeat(cols - used); // erase previous frame's tail
+  return out;
+}
+
+// embedded terminal (ctrl-t): divider row + scrollback tail + live prompt.
+// Scrollback lines are { segs: [{ t, c }] }; clipping runs per segment so
+// stored colors never split mid-escape.
+function drawSegs(segs, w) {
+  let out = '';
+  let used = 0;
+  for (const s of segs) {
+    if (used >= w) break;
+    const chunk = s.t.length > w - used ? s.t.slice(0, w - used) : s.t;
+    if (!chunk.length) continue;
+    used += chunk.length;
+    out += (s.c || '') + chunk + (s.c ? RESET : '');
+  }
+  return out;
+}
+
+// live prompt `cwd>buf` with a block cursor; scrolls horizontally when it
+// outgrows the pane. The `>` turns red after a failed command.
+function drawTermPrompt(t, w) {
+  let lead = `${t.cwd}>`;
+  const maxLead = Math.max(8, w - 12);
+  if (lead.length > maxLead) lead = '…' + lead.slice(-(maxLead - 1));
+  const P = lead + t.buf;
+  const ci = Math.min(lead.length + t.col, P.length);
+  let off = 0;
+  if (P.length > w) off = Math.min(Math.max(0, ci - w + 1), P.length - w);
+  const vis = P.slice(off, off + w);
+  const c0 = ci - off;
+  let out = '';
+  let run = '';
+  let style = null;
+  const push = () => { if (run) { out += (style || '') + run + (style ? RESET : ''); run = ''; } };
+  for (let j = 0; j < vis.length; j++) {
+    const i = off + j;
+    let st = '';
+    if (i === c0) st = '\x1b[7m';
+    else if (i < lead.length - 1) st = DIM;
+    else if (i === lead.length - 1) st = t.lastOk === false ? '\x1b[31m' : DIM;
+    if (st !== style) { push(); style = st; }
+    run += vis[j];
+  }
+  if (c0 >= vis.length) { // cursor past the last char
+    if (style !== '\x1b[7m') { push(); style = '\x1b[7m'; }
+    run += ' ';
+  }
+  push();
+  return out;
+}
+
+function drawTerm(T, x, w, top, rows) {
+  const t = state.term;
+  let out = '';
+  const title = t.running
+    ? '─ terminal · running (ctrl-c stops) ─'
+    : '─ terminal · esc back · exit close · pgup/pgdn scroll ─';
+  let head = title.length > w ? title.slice(0, w) : title;
+  if (t.scroll > 0) {
+    const tag = ` ↑${t.scroll}`;
+    head = (head + tag).length > w ? head.slice(0, w - tag.length) + tag : head + tag;
+  }
+  out += `\x1b[${top};${x}H\x1b[K${T.divider}${head}${RESET}`;
+  const cap = Math.max(1, rows - 1); // content rows below the divider
+  t._viewH = cap;
+  const hidden = Math.min(Math.max(0, t.scroll), t.lines.length + 1);
+  const showPrompt = hidden === 0;
+  const room = showPrompt ? cap - 1 : cap;
+  const end = Math.max(0, t.lines.length - hidden);
+  const vis = t.lines.slice(Math.max(0, end - room), end);
+  let r = top + 1;
+  for (let k = vis.length; k < room; k++, r++) out += `\x1b[${r};${x}H\x1b[K`;
+  for (const ln of vis) {
+    out += `\x1b[${r};${x}H\x1b[K${drawSegs(ln.segs, w)}`;
+    r++;
+  }
+  if (showPrompt) out += `\x1b[${r};${x}H\x1b[K${drawTermPrompt(t, w)}`;
+  return out;
+}
+
+// autocomplete popup (ctrl-n / typing): overlay box anchored at the cursor,
+// below it or above when space runs out. Selected row inverted, names in
+// kind colors. The previous frame's footprint is erased first so a
+// shrinking popup leaves no stale cells.
+let lastCmpRect = null;
+function eraseCmpRect() {
+  const r = lastCmpRect;
+  let out = '';
+  for (let i = 0; i < r.h; i++) {
+    const row = r.top + i;
+    if (row < 2) continue;
+    out += `\x1b[${row};${r.x}H${RESET}${' '.repeat(r.w)}`;
+  }
+  return out;
+}
+function drawComplete(T, rightX, rightW, rows, v) {
+  const line = edit.lines[edit.row] || '';
+  const gutterW = stripAnsi(editor.editGutter(edit.row)).length;
+  const dc = Math.max(0, editor.editDispCol(line, edit.col) - edit.colOff);
+  const items = v.items.slice(0, 8);
+  const more = v.items.length - items.length;
+  let pw = 8;
+  for (const it of items) pw = Math.max(pw, it.w.length + 5);
+  if (more > 0) pw = Math.max(pw, `… +${more} more`.length + 2);
+  pw = Math.min(pw, Math.max(10, rightW));
+  let x = rightX + gutterW + dc;
+  x = Math.max(rightX, Math.min(x, rightX + Math.max(0, rightW - pw)));
+  const crow = 2 + (edit.row - edit.scroll);
+  const ph = items.length + (more > 0 ? 1 : 0);
+  let top = crow + 1;
+  if (top + ph > rows - 1) top = Math.max(2, crow - ph);
+  let out = '';
+  if (lastCmpRect) out += eraseCmpRect();
+  const paint = (r, text) => {
+    if (r < 2 || r > rows - 1) return;
+    out += `\x1b[${r};${x}H${text}`;
+  };
+  items.forEach((it, i) => {
+    const nm = it.w.length > pw - 3 ? it.w.slice(0, pw - 4) + '…' : it.w;
+    const left = ` ${nm}`.padEnd(pw - 2, ' ');
+    const rowText = left + ` ${it.k}`; // exactly pw visible columns
+    if (i === v.sel) paint(top + i, `${T.selBg}${T.selFg}${rowText}${RESET}`);
+    else paint(top + i, `${complete.kindColor(T, it.k)}${left}${RESET}${DIM} ${it.k}${RESET}`);
+  });
+  if (more > 0) paint(top + items.length, `${DIM}${(` … +${more} more`).padEnd(pw, ' ')}${RESET}`);
+  lastCmpRect = { x, w: pw, top, h: ph };
+  return out;
+}
+
 // centered modal: title, target name, [y]es / [n]o
 function drawDialog(T, cols, rows) {
   const d = state.dialog;
@@ -286,4 +513,4 @@ function drawDialog(T, cols, rows) {
   return out;
 }
 
-Object.assign(module.exports, { size, paneGeometry, wipeShrunk, render, gitRoot, gitInfo, dropGitCache });
+Object.assign(module.exports, { size, paneGeometry, wipeShrunk, render, drawTabRow, gitRoot, gitInfo, dropGitCache });

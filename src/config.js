@@ -15,6 +15,9 @@ function loadSettings() {
     const cfg = JSON.parse(raw);
     if (typeof cfg.showHidden === 'boolean') state.showHidden = cfg.showHidden;
     if (typeof cfg.showFiles === 'boolean') state.showFiles = cfg.showFiles;
+    if (typeof cfg.showIcons === 'boolean') state.showIcons = cfg.showIcons;
+    if (typeof cfg.iconStyle === 'string' && ['nerd', 'badge', 'off'].includes(cfg.iconStyle)) state.iconStyle = cfg.iconStyle;
+    else if (cfg.showIcons === false) state.iconStyle = 'off'; // legacy config
     if (typeof cfg.hl === 'boolean') state.hl = cfg.hl;
     if (typeof cfg.theme === 'string' && THEMES[cfg.theme]) state.theme = cfg.theme;
     if (typeof cfg.lineNumbers === 'string' && editor.LN_MODES.includes(cfg.lineNumbers)) state.lineNumbers = cfg.lineNumbers;
@@ -33,7 +36,7 @@ function saveSettings() {
   try {
     fs.writeFileSync(
       configPath(),
-      JSON.stringify({ theme: state.theme, showHidden: state.showHidden, showFiles: state.showFiles, hl: state.hl, autoClose: state.autoClose, discord: state.discord, lineNumbers: state.lineNumbers }, null, 2)
+      JSON.stringify({ theme: state.theme, showHidden: state.showHidden, showFiles: state.showFiles, showIcons: state.iconStyle !== 'off', iconStyle: state.iconStyle, hl: state.hl, autoClose: state.autoClose, discord: state.discord, lineNumbers: state.lineNumbers }, null, 2)
     );
   } catch (e) {
     state.message = `cannot save settings: ${String(e.message).split('\n')[0]}`;

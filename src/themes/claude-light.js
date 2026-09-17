@@ -6,5 +6,5 @@ module.exports = {
   path: hexFg('#77736B'), counter: hexFg('#77736B'), status: hexFg('#77736B'), divider: hexFg('#DDD9CF'),
   comment: hexFg('#77736B'), str: hexFg('#3F7655'), num: hexFg('#B85C42'),
   kw: hexFg('#C15F3C'), fn: hexFg('#456A9F'), type: hexFg('#8A6815'),
-  bool: hexFg('#76549A'), prop: hexFg('#456A9F'), pun: hexFg('#77736B'),
+  bool: hexFg('#76549A'), prop: hexFg('#456A9F'), var: hexFg('#456A9F'), pun: hexFg('#77736B'),
 };

@@ -1,7 +1,7 @@
 // Theme registry: add a theme by dropping a file in this folder and
 // registering it below. Every theme must define all keys: dir, file, link,
 // exec, selBg, selFg, path, counter, status, divider + syntax: comment, str,
-// num, kw, fn, type, bool, prop, pun.
+// num, kw, fn, type, bool, prop, var, pun.
 const { state } = require('../state');
 
 const THEMES = {

@@ -12,10 +12,13 @@ Pure Node.js stdlib, CommonJS (`"type": "commonjs"`). Zero dependencies, no buil
 ## Structure (`src/`)
 
 - `index.js` — public API re-export only; `bin/sabi.js` just calls `api.main()`.
-- `main.js` — CLI parsing + `onKey`/`feedKey` dispatch. `state.mode` routes: `browse|settings|input|edit|grep`.
+- `main.js` — CLI parsing + `onKey`/`feedKey` dispatch. `state.mode` routes: `browse|settings|input|edit|grep|git|term`.
 - `state.js` — shared mutable singletons (`state`, `edit`); always require by reference.
-- `explorer.js` / `editor.js` / `settings.js` / `ui.js` / `create.js` — UI cluster.
-- `config.js` — `~/.sabi.json` load/save (`theme, showHidden, showFiles, hl, lineNumbers`).
+- `explorer.js` / `editor.js` / `settings.js` / `ui.js` / `create.js` / `term.js` — UI cluster.
+- `config.js` — `~/.sabi.json` load/save (`theme, showHidden, showFiles, showIcons, iconStyle, hl, lineNumbers`).
+- `term.js` — embedded shell pane (pipe mode, NOT a pty: single-line commands, no TUIs); `state.term` holds UI data, proc is module-level.
+- `complete.js` — autocomplete engine (static catalogs + buffer symbols); popup state is module-level, validated per keystroke; editor calls in, never the reverse (no editor import).
+- `diagnose.js` — static diagnostics (sound-only: annotation-vs-literal, const, dups, brackets); memoized per keystroke; leaf module (no ui/editor import).
 - `themes/` + `highlight/` — theming and per-language syntax highlighting.
 
 ## Gotchas (agent would miss)
@@ -24,5 +27,5 @@ Pure Node.js stdlib, CommonJS (`"type": "commonjs"`). Zero dependencies, no buil
 - ESC handling: lone ESC is delayed 60ms in `feedKey` (`src/main.js:75-97`) to recombine split escape sequences — don't "fix" the delay.
 - Editor refuses files >512KB or >10000 lines and NUL-containing (binary) buffers (`src/editor.js:15-34`).
 - Highlight: pass one shared `st = {}` across consecutive lines for block comments/fences; fresh object per file (`src/highlight/index.js:3-4`).
-- New theme: drop file in `src/themes/` + register in `THEMES` map (`src/themes/index.js`); must define ALL keys: `dir,file,link,exec,selBg,selFg,path,counter,status,divider + syntax: comment,str,num,kw,fn,type,bool,prop,pun` — partial themes render broken colors silently.
-- Global keys: `ctrl-b` toggles pane in every mode; dialogs capture all keys (`src/main.js:99-107`).
+- New theme: drop file in `src/themes/` + register in `THEMES` map (`src/themes/index.js`); must define ALL keys: `dir,file,link,exec,selBg,selFg,path,counter,status,divider + syntax: comment,str,num,kw,fn,type,bool,prop,var,pun` — partial themes render broken colors silently.
+- Global keys: `ctrl-b` toggles pane in every mode; dialogs capture all keys (`src/main.js:99-107`). `ctrl-t` toggles terminal in browse/edit/term only; `ctrl-n` (and `ctrl-shift-t`, CSI-u only) opens a new tab.

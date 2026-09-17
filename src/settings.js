@@ -15,12 +15,14 @@ const explorer = require('./explorer');
 const discord = require('./discord');
 const { highlightCode } = require('./highlight/code');
 const ui = require('./ui');
+const icons = require('./icons');
 
 function settingsItems() {
   return [
     ...THEME_NAMES.map((name) => ({ type: 'theme', name })),
     { type: 'hl' },
     { type: 'hidden' },
+    { type: 'icons' },
     { type: 'ln' },
     { type: 'head', text: 'auto-close' },
     ...editor.PAIRS.map((p) => ({ type: 'pair', key: p.key })),
@@ -71,6 +73,11 @@ const KEY_HELP = [
   { type: 'key', keys: 'ctrl-d', desc: 'delete' },
   { type: 'key', keys: 'ctrl+alt+f', desc: 'search all files' },
   { type: 'key', keys: 'ctrl-g', desc: 'git changes' },
+  { type: 'key', keys: 'ctrl-t', desc: 'terminal pane' },
+  { type: 'key', keys: 'ctrl-shift-t', desc: 'new empty tab' },
+  { type: 'key', keys: 'shift+tab', desc: 'cycle tabs' },
+  { type: 'key', keys: 'shift+1..9', desc: 'jump to tab' },
+  { type: 'key', keys: 'ctrl-w', desc: 'close tab' },
   { type: 'head', text: 'edit' },
   { type: 'key', keys: 'type', desc: 'insert (paste works)' },
   { type: 'key', keys: 'backspace / del', desc: 'delete' },
@@ -89,6 +96,8 @@ const KEY_HELP = [
   { type: 'key', keys: 'ctrl-u', desc: 'select word' },
   { type: 'key', keys: 'ctrl-l', desc: 'select line' },
   { type: 'key', keys: 'ctrl-f', desc: 'find in file' },
+  { type: 'key', keys: 'ctrl-o', desc: 'autocomplete' },
+  { type: 'key', keys: 'alt-e / alt-E', desc: 'next / prev problem' },
   { type: 'key', keys: 'shift+arrows', desc: 'extend selection' },
   { type: 'key', keys: 'shift+home/end', desc: 'to line ends' },
   { type: 'key', keys: 'ctrl+shift+arrows', desc: 'extend by word/line' },
@@ -97,6 +106,30 @@ const KEY_HELP = [
   { type: 'key', keys: 'ctrl+home/end', desc: 'top / bottom' },
   { type: 'key', keys: 'fn+arrows (= home/end)', desc: 'with shift: select' },
   { type: 'key', keys: 'esc', desc: 'exit (twice discards)' },
+  { type: 'key', keys: 'ctrl-t', desc: 'terminal pane' },
+  { type: 'key', keys: 'ctrl-n', desc: 'new empty tab' },
+  { type: 'key', keys: 'ctrl-shift-t', desc: 'new empty tab' },
+  { type: 'key', keys: 'ctrl-w', desc: 'close tab (twice discards)' },
+  { type: 'key', keys: 'shift+tab', desc: 'cycle tabs' },
+  { type: 'key', keys: 'alt+1..9', desc: 'jump to tab' },
+  { type: 'head', text: 'autocomplete' },
+  { type: 'key', keys: '. / typing', desc: 'suggest (auto)' },
+  { type: 'key', keys: 'ctrl-o', desc: 'suggest (manual)' },
+  { type: 'key', keys: 'import "…', desc: 'file paths' },
+  { type: 'key', keys: 'mod.', desc: 'imported members' },
+  { type: 'key', keys: 'up / down', desc: 'pick' },
+  { type: 'key', keys: 'enter / tab', desc: 'accept' },
+  { type: 'key', keys: 'esc', desc: 'dismiss' },
+  { type: 'head', text: 'terminal' },
+  { type: 'key', keys: 'type + enter', desc: 'run command' },
+  { type: 'key', keys: 'up / down', desc: 'history' },
+  { type: 'key', keys: 'tab', desc: 'complete path' },
+  { type: 'key', keys: 'pgup / pgdn', desc: 'scroll output' },
+  { type: 'key', keys: 'ctrl-c', desc: 'stop command' },
+  { type: 'key', keys: 'ctrl-l', desc: 'clear output' },
+  { type: 'key', keys: 'esc', desc: 'back to files' },
+  { type: 'key', keys: 'ctrl-t', desc: 'close terminal' },
+  { type: 'key', keys: 'exit', desc: 'close terminal' },
   { type: 'head', text: 'project search' },
   { type: 'key', keys: 'type + enter', desc: 'run search' },
   { type: 'key', keys: 'j / k', desc: 'move' },
@@ -164,6 +197,13 @@ function settingsActivate() {
     explorer.loadDir();
     state.sel = explorer.firstContentIndex();
     state.message = state.showHidden ? 'hidden files shown' : 'hidden files hidden';
+  } else if (it.type === 'icons') {
+    const order = ['nerd', 'badge', 'off'];
+    const next = order[(order.indexOf(icons.currentStyle()) + 1) % order.length];
+    state.iconStyle = next;
+    state.showIcons = next !== 'off';
+    config.saveSettings();
+    state.message = `file icons: ${next}${next === 'nerd' ? ' (needs a nerd font)' : ''}`;
   } else if (it.type === 'pair') {
     const p = editor.PAIRS.find((q) => q.key === it.key);
     state.autoClose[it.key] = !state.autoClose[it.key];
@@ -361,7 +401,7 @@ function renderSettings() {
       else out += full;
       continue;
     }
-    if (it.type === 'hl' || it.type === 'hidden' || it.type === 'ln' || it.type === 'pair' || it.type === 'discord' || it.type === 'discordId') {
+    if (it.type === 'hl' || it.type === 'hidden' || it.type === 'icons' || it.type === 'ln' || it.type === 'pair' || it.type === 'discord' || it.type === 'discordId') {
       let label;
       if (it.type === 'ln') label = `line numbers: ${state.lineNumbers} (enter to cycle)`;
       else if (it.type === 'discord') {
@@ -374,6 +414,9 @@ function renderSettings() {
         const p = editor.PAIRS.find((q) => q.key === it.key) || { open: '?', close: '?' };
         const on = !state.autoClose || state.autoClose[it.key] !== false;
         label = `[${on ? 'x' : ' '}] auto-close ${p.open}${p.close}`;
+      }
+      else if (it.type === 'icons') {
+        label = `icons: ${icons.currentStyle()} (enter to cycle)`;
       }
       else {
         const on = it.type === 'hl' ? state.hl : state.showHidden;

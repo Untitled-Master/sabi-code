@@ -7,5 +7,5 @@ module.exports = {
   path: NONE, counter: NONE, status: DIM, divider: DIM,
   comment: DIM, str: NONE, num: NONE,
   kw: BOLD, fn: NONE, type: NONE,
-  bool: BOLD, prop: NONE, pun: DIM,
+  bool: BOLD, prop: NONE, var: NONE, pun: DIM,
 };

@@ -8,5 +8,5 @@ module.exports = {
   // VSCode Light+ palette
   comment: hexFg('#008000'), str: hexFg('#A31515'), num: hexFg('#098658'),
   kw: hexFg('#0000FF'), fn: hexFg('#795E26'), type: hexFg('#267F99'),
-  bool: hexFg('#0000FF'), prop: hexFg('#001080'), pun: hexFg('#808080'),
+  bool: hexFg('#0000FF'), prop: hexFg('#001080'), var: hexFg('#001080'), pun: hexFg('#808080'),
 };

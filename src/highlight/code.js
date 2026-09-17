@@ -1,6 +1,6 @@
 // Token pass over `code` segments: numbers, booleans, keywords, builtin and
 // capitalized types, calls, properties, decorators, $vars, yaml anchors,
-// ini sections/keys, punctuation.
+// ini sections/keys, punctuation, and bare identifiers (variables, last).
 const { RESET } = require('../ansi');
 const { BOOLS, KW, TYPES } = require('./keywords');
 const { scanLine } = require('./scan');
@@ -31,7 +31,8 @@ function codeRegex(lang) {
     `|(\\$[A-Za-z_][\\w]*|\\$\\{[^}\\n]*\\})` +
     `|${anchorPat}|${sectPat}|${keyPat}` +
     `|([{}()\\[\\];,.])` +
-    `|([-+*/%=<>!&|^~?:]+)`,
+    `|([-+*/%=<>!&|^~?:]+)` +
+    `|([A-Za-z_$][\\w$]*)`, // bare identifiers = variables (last: everything else won)
     'g'
   );
   reCache[lang] = re;
@@ -40,8 +41,9 @@ function codeRegex(lang) {
 
 function tokenize(seg, lang, th) {
   const re = codeRegex(lang);
+  const vc = th.var || th.prop; // fallback keeps third-party themes working
   re.lastIndex = 0;
-  return seg.replace(re, (m, num, bool, kw, bt, cap, fn, pc, pd, deco, vr, anc, sect, pe, pb, po) => {
+  return seg.replace(re, (m, num, bool, kw, bt, cap, fn, pc, pd, deco, vr, anc, sect, pe, pb, po, va) => {
     if (num) return `${th.num}${num}${RESET}`;
     if (bool) return `${th.bool}${bool}${RESET}`;
     if (kw) return `${th.kw}${kw}${RESET}`;
@@ -57,6 +59,7 @@ function tokenize(seg, lang, th) {
     if (pe) return `${th.prop}${pe}${RESET}`;
     if (pb) return `${th.pun}${pb}${RESET}`;
     if (po) return `${th.pun}${po}${RESET}`;
+    if (va) return `${vc}${va}${RESET}`;
     return m;
   });
 }

@@ -12,12 +12,19 @@ const { scanLine } = require('./highlight/scan');
 const explorer = require('./explorer');
 const discord = require('./discord');
 const ui = require('./ui');
+const complete = require('./complete');
+const diagnose = require('./diagnose');
 
 const EDIT_MAX_SIZE = 512 * 1024;
 const EDIT_MAX_LINES = 10000;
 
 // 'ok' (editing, already rendered) | 'error' (message set, rendered)
+// The file opens in the current tab when it is clean (including a pristine
+// ctrl-shift-t tab, which then takes the file's name) or a new one when the
+// current tab has unsaved work. Files already open just activate their
+// tab — never duplicated, never reloaded over unsaved changes.
 function editOpen(file) {
+  complete.dismiss();
   const refuse = (why) => {
     state.message = `${path.basename(file)} ${why}`;
     ui.render();
@@ -36,17 +43,78 @@ function editOpen(file) {
   }
   const lines = buf.toString('utf8').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
   if (lines.length > EDIT_MAX_LINES) return refuse('— too large to edit in sabi');
+  const existing = findTab(file);
+  if (existing >= 0) {
+    if (existing !== edit.tabIdx || state.mode !== 'edit') loadTab(existing);
+    else { state.message = ''; ui.render(); }
+    return 'ok';
+  }
+  activateBuffer(file, lines, { reuse: true });
+  return 'ok';
+}
+
+// ctrl-shift-t: a new empty tab (file: null), then straight back to the file
+// explorer so you can pick its file — enter on a file while this tab is
+// pristine fills the tab and names it.
+function editNewEmptyTab() {
+  complete.dismiss();
+  if (isPristineEmpty()) { state.message = 'new tab — enter opens a file into it'; state.mode = 'browse'; return ui.render(); } // no tab spam
+  persistActive();
+  const tab = {
+    file: null, lines: [''],
+    row: 0, col: 0, scroll: 0, colOff: 0,
+    dirty: false, confirmDiscard: false, anchor: null, undo: [], find: null,
+  };
+  edit.tabs.push(tab);
+  edit.tabIdx = edit.tabs.length - 1;
+  edit.file = null; edit.lines = tab.lines;
+  edit.row = 0; edit.col = 0; edit.scroll = 0; edit.colOff = 0;
+  edit.dirty = false; edit.confirmDiscard = false; edit.anchor = null;
+  edit.undo = tab.undo; edit.find = null;
+  state.mode = 'browse';
+  state.message = 'new tab — enter opens a file into it';
+  discord.refreshPresence();
+  ui.render();
+}
+
+// an untitled tab with nothing typed yet — safe to fill or drop
+function isPristineEmpty() {
+  return !edit.file && !edit.dirty && edit.lines.length <= 1 && (edit.lines[0] || '') === '';
+}
+
+// Put a freshly loaded buffer on screen: reuse the active tab slot when
+// allowed (clean + requested), otherwise push a new tab. Caller guarantees
+// the file is not already open.
+function activateBuffer(file, lines, opts) {
+  const reuse = !!opts.reuse && edit.tabIdx >= 0 && edit.tabIdx < edit.tabs.length && !edit.dirty;
+  const tab = {
+    file, lines,
+    row: 0, col: 0, scroll: 0, colOff: 0,
+    dirty: false, confirmDiscard: false, anchor: null, undo: [], find: null,
+  };
+  if (reuse) {
+    persistActive();
+    edit.tabs[edit.tabIdx] = tab;
+  } else {
+    persistActive();
+    edit.tabs.push(tab);
+    edit.tabIdx = edit.tabs.length - 1;
+  }
   edit.file = file; edit.lines = lines;
   edit.row = 0; edit.col = 0; edit.scroll = 0; edit.colOff = 0;
-  edit.dirty = false; edit.confirmDiscard = false; edit.anchor = null; edit.undo = []; edit.find = null;
+  edit.dirty = false; edit.confirmDiscard = false; edit.anchor = null;
+  edit.undo = tab.undo; edit.find = null;
   state.mode = 'edit';
   state.message = '';
   discord.refreshPresence();
   ui.render();
-  return 'ok';
 }
 
 function editSave() {
+  if (!edit.file) {
+    state.message = 'untitled tab — esc for files, enter opens one here';
+    return ui.render();
+  }
   try {
     fs.writeFileSync(edit.file, edit.lines.join('\n'));
   } catch (err) {
@@ -56,15 +124,27 @@ function editSave() {
   }
   edit.dirty = false;
   edit.confirmDiscard = false;
+  persistActive();
   state.message = `saved ${path.basename(edit.file)}`;
   explorer.loadDir();
   ui.render();
 }
 
+// esc: leave the editor but keep every tab (unsaved work stays intact).
+// A pristine ctrl-shift-t tab is just dropped — esc works as "never mind".
 function editExit() {
+  complete.dismiss();
+  if (isPristineEmpty()) return closeTab();
+  if (edit.dirty && !edit.confirmDiscard) {
+    edit.confirmDiscard = true;
+    persistActive();
+    state.message = 'unsaved changes — esc again to discard, ctrl-s to save';
+    return ui.render();
+  }
+  persistActive();
   const base = edit.file ? path.basename(edit.file) : null;
-  edit.file = null; edit.lines = [];
-  edit.dirty = false; edit.confirmDiscard = false; edit.anchor = null; edit.undo = []; edit.find = null;
+  edit.confirmDiscard = false;
+  persistActive();
   state.mode = 'browse';
   state.message = '';
   explorer.loadDir();
@@ -72,7 +152,141 @@ function editExit() {
     const idx = state.entries.findIndex((e) => e.name === base || e.name === base + '/');
     if (idx >= 0) { state.sel = idx; state.scroll = 0; }
   }
+  discord.refreshPresence();
   ui.render();
+}
+
+// --- tabs ---------------------------------------------------------------
+// Tab entries mirror the editor buffer shape (clip/tabs/tabIdx stay global).
+function findTab(file) {
+  if (!file) return -1;
+  return edit.tabs.findIndex((t) => t && t.file === file);
+}
+
+// Copy the live buffer into its tab slot (cheap field copy; the lines array
+// travels by reference). Called before leaving the active tab.
+function persistActive() {
+  if (edit.tabIdx < 0 || edit.tabIdx >= edit.tabs.length) return;
+  const t = edit.tabs[edit.tabIdx];
+  if (!t) return;
+  t.file = edit.file; t.lines = edit.lines;
+  t.row = edit.row; t.col = edit.col; t.scroll = edit.scroll; t.colOff = edit.colOff;
+  t.dirty = edit.dirty; t.confirmDiscard = edit.confirmDiscard;
+  t.anchor = edit.anchor ? { row: edit.anchor.row, col: edit.anchor.col } : null;
+  t.undo = edit.undo; t.find = edit.find;
+}
+
+// Make tab i live (persists the previous one first).
+function loadTab(i) {
+  complete.dismiss();
+  if (!edit.tabs.length) return;
+  const n = ((i % edit.tabs.length) + edit.tabs.length) % edit.tabs.length;
+  if (n !== edit.tabIdx) persistActive();
+  const t = edit.tabs[n];
+  edit.file = t.file; edit.lines = t.lines;
+  edit.row = t.row; edit.col = t.col; edit.scroll = t.scroll; edit.colOff = t.colOff;
+  edit.dirty = t.dirty; edit.confirmDiscard = false;
+  edit.anchor = t.anchor ? { row: t.anchor.row, col: t.anchor.col } : null;
+  edit.undo = Array.isArray(t.undo) ? t.undo : [];
+  t.undo = edit.undo;
+  edit.find = t.find || null;
+  edit.tabIdx = n;
+  state.mode = 'edit';
+  state.message = '';
+  discord.refreshPresence();
+  ui.render();
+}
+
+// Jump to tab i (0-based, wraps). From browse this also enters the editor.
+function switchTab(i) {
+  if (!edit.tabs.length) { state.message = 'no tabs open'; return ui.render(); }
+  const n = ((i % edit.tabs.length) + edit.tabs.length) % edit.tabs.length;
+  if (n === edit.tabIdx && state.mode === 'edit') { state.message = ''; return ui.render(); }
+  loadTab(n);
+}
+
+// shift+tab: cycle tabs (wraps both directions)
+function nextTab(d) {
+  if (!edit.tabs.length) { state.message = 'no tabs open'; return ui.render(); }
+  if (edit.tabs.length === 1) {
+    if (state.mode !== 'edit' || edit.tabIdx !== 0) loadTab(0);
+    else { state.message = ''; ui.render(); }
+    return;
+  }
+  loadTab(edit.tabIdx + (d || 1));
+}
+
+// ctrl-w: close the active tab (twice when dirty — first warns).
+function closeTab() {
+  complete.dismiss();
+  if (!edit.tabs.length || edit.tabIdx < 0) {
+    state.mode = 'browse';
+    state.message = '';
+    return ui.render();
+  }
+  if (edit.dirty && !edit.confirmDiscard) {
+    edit.confirmDiscard = true;
+    persistActive();
+    state.message = 'unsaved changes — ctrl-w again to discard, ctrl-s to save';
+    return ui.render();
+  }
+  const was = edit.tabIdx;
+  edit.tabs.splice(was, 1);
+  if (!edit.tabs.length) {
+    edit.file = null; edit.lines = [];
+    edit.row = 0; edit.col = 0; edit.scroll = 0; edit.colOff = 0;
+    edit.dirty = false; edit.confirmDiscard = false; edit.anchor = null;
+    edit.undo = []; edit.find = null;
+    edit.tabIdx = -1;
+    state.mode = 'browse';
+    state.message = '';
+    explorer.loadDir();
+    discord.refreshPresence();
+    return ui.render();
+  }
+  const t = edit.tabs[Math.min(was, edit.tabs.length - 1)];
+  const n = edit.tabs.indexOf(t);
+  edit.file = t.file; edit.lines = t.lines;
+  edit.row = t.row; edit.col = t.col; edit.scroll = t.scroll; edit.colOff = t.colOff;
+  edit.dirty = t.dirty; edit.confirmDiscard = false;
+  edit.anchor = t.anchor ? { row: t.anchor.row, col: t.anchor.col } : null;
+  edit.undo = Array.isArray(t.undo) ? t.undo : [];
+  t.undo = edit.undo;
+  edit.find = t.find || null;
+  edit.tabIdx = n;
+  state.mode = 'edit';
+  state.message = '';
+  discord.refreshPresence();
+  ui.render();
+}
+
+// Tab bar data for ui.js. The active slot merges the live buffer so dirty
+// flags and file names are never stale between persists.
+function tabEntries() {
+  return edit.tabs.map((t, i) => {
+    if (i === edit.tabIdx) return { file: edit.file || (t && t.file), dirty: edit.dirty, active: true };
+    return { file: t && t.file, dirty: !!(t && t.dirty), active: false };
+  });
+}
+
+// 0-based tab index for a jump key, or -1. editOnly skips the bare symbols
+// (they type text in the buffer — only Alt/CSI-u sequences count there).
+function tabIndexFromKey(key, editOnly) {
+  if (typeof key !== 'string') return -1;
+  const alt = key.match(/^\x1b([1-9])$/);
+  if (alt) return Number(alt[1]) - 1;
+  const csi = key.match(/^\x1b\[(\d+);2u$/);
+  if (csi) {
+    const code = Number(csi[1]);
+    if (code >= 49 && code <= 57) return code - 49; // kitty shift+1..9
+    if (code === 48) return 9; // shift+0 → tab 10
+  }
+  if (!editOnly) {
+    if (key === ')') return 9; // shift+0
+    const sym = '!@#$%^&*(';
+    if (key.length === 1 && sym.indexOf(key) >= 0) return sym.indexOf(key);
+  }
+  return -1;
 }
 
 // --- auto-close pairs ------------------------------------------------------
@@ -186,6 +400,7 @@ function pushUndo() {
 }
 
 function editUndo() {
+  complete.dismiss();
   const s = edit.undo.pop();
   if (!s) return ui.render();
   edit.lines = s.lines;
@@ -291,6 +506,7 @@ function wordBackward(line, col) {
 // ctrl-u: select the current word, or grow the active selection one word
 // further away from the anchor (stays on the cursor's line)
 function editWordSelect() {
+  complete.dismiss();
   const line = edit.lines[edit.row] || '';
   if (!selActive()) {
     let a = edit.col;
@@ -328,6 +544,7 @@ function editWordSelect() {
 
 // ctrl-l: select the whole current line; repeat to grow line by line
 function editLineSelect() {
+  complete.dismiss();
   const last = edit.lines.length - 1;
   const a = edit.anchor;
   const lineWise = !!a && a.col === 0 && edit.col === 0 && a.row !== edit.row;
@@ -361,6 +578,7 @@ function copyToSystem(text) {
 }
 
 function editSelectAll() {
+  complete.dismiss();
   if (!edit.lines.length) return ui.render();
   edit.anchor = { row: 0, col: 0 };
   edit.row = edit.lines.length - 1;
@@ -377,6 +595,7 @@ function editCopy() {
 }
 
 function editCut() {
+  complete.dismiss();
   pushUndo();
   if (selActive()) {
     const t = selText();
@@ -402,6 +621,7 @@ function editCut() {
 }
 
 function editPaste() {
+  complete.dismiss();
   const clip = edit.clip || '';
   if (!clip) return ui.render();
   pushUndo();
@@ -537,11 +757,13 @@ function editNavKey(key) {
 const FIND_MAX_MATCHES = 500;
 
 function editFindOpen() {
+  complete.dismiss();
   edit.find = { query: '', matches: [], idx: 0 };
   ui.render();
 }
 
 function editFindClose() {
+  complete.dismiss();
   edit.find = null;
   ui.render();
 }
@@ -606,8 +828,37 @@ function editFindKey(key) {
   if (changed) { editFindUpdate(); ui.render(); }
 }
 
-// visible-column ranges of the find matches on buffer line li.
-// [{ s, e, cur }] sorted by s. Empty when find is off.
+// display-column diagnostic ranges on buffer line li (raw cols → disp cols,
+// tabs count as 2 — mirrors editDispCol).
+function diagRangesForLine(li) {
+  const out = [];
+  if (state.mode !== 'edit') return out;
+  const line = edit.lines[li] || '';
+  for (const d of diagnose.forBuffer()) {
+    if (d.row !== li) continue;
+    out.push({ s: editDispCol(line, d.col), e: editDispCol(line, d.end), sev: d.sev });
+  }
+  return out;
+}
+
+// alt-e / alt-shift-e: jump to the next / previous problem, wrapping
+function diagJump(d) {
+  complete.dismiss();
+  const diags = diagnose.forBuffer().slice().sort((a, b) => a.row - b.row || a.col - b.col);
+  if (!diags.length) { state.message = 'no problems'; return ui.render(); }
+  let t = null;
+  if (d > 0) t = diags.find((x) => x.row > edit.row || (x.row === edit.row && x.col > edit.col)) || diags[0];
+  else {
+    const prev = diags.filter((x) => x.row < edit.row || (x.row === edit.row && x.col < edit.col));
+    t = prev.length ? prev[prev.length - 1] : diags[diags.length - 1];
+  }
+  edit.row = t.row;
+  edit.col = Math.min(t.col, (edit.lines[t.row] || '').length);
+  edit.anchor = null;
+  state.message = '';
+  ui.render();
+}
+
 function findRangesForLine(li) {
   const f = edit.find;
   if (!f || !f.query || !f.matches.length) return [];
@@ -666,7 +917,15 @@ function editKey(key) {
   if (key === '\x15') return editWordSelect(); // ctrl-u: select by words
   if (key === '\x0c') return editLineSelect(); // ctrl-l: select by lines
   if (key === '\x06') return edit.find ? editFindClose() : editFindOpen(); // ctrl-f toggles find
+  if (key === '\x17') return closeTab(); // ctrl-w: close tab (twice when dirty)
+  if (key === '\x1b[Z') return nextTab(1); // shift+tab: cycle tabs
+  const tabJump = tabIndexFromKey(key, true); // alt+1..9 / kitty shift+1..9
+  if (tabJump >= 0) return switchTab(tabJump);
   if (edit.find) return editFindKey(key);
+  if (key === '\x0f') return complete.manual(); // ctrl-o: autocomplete
+  let pushed = false;
+  const snap = () => { if (!pushed) { pushUndo(); pushed = true; } };
+  if (complete.popupKey(key, snap)) return; // popup nav/accept first
   if (key === '\u001b') { // esc
     if (edit.dirty && !edit.confirmDiscard) {
       edit.confirmDiscard = true;
@@ -676,20 +935,21 @@ function editKey(key) {
     return editExit();
   }
   if (key[0] === '\x1b') {
+    if (key === '\x1be') return diagJump(1); // alt-e: next problem
+    if (key === '\x1bE') return diagJump(-1); // alt-shift-e: prev problem
     if (key === '\u001b[3~') {
       const len = (edit.lines[edit.row] || '').length;
       if (selActive() || edit.col < len || edit.row < edit.lines.length - 1) pushUndo();
       if (!deleteSelection()) editDeleteForward();
       edit.dirty = true;
+      complete.afterType();
       return ui.render();
     }
-    if (editNavKey(key)) return ui.render();
+    if (editNavKey(key)) { complete.dismiss(); return ui.render(); }
     return; // ignore other sequences without redrawing
   }
-  if (key === '\r') { pushUndo(); deleteSelection(); editNewline(); edit.dirty = true; edit.confirmDiscard = false; return ui.render(); }
+  if (key === '\r') { pushUndo(); deleteSelection(); editNewline(); edit.dirty = true; edit.confirmDiscard = false; complete.dismiss(); return ui.render(); }
   let changed = false;
-  let pushed = false;
-  const snap = () => { if (!pushed) { pushUndo(); pushed = true; } };
   for (const ch of key) {
     if (ch === '\r') { snap(); deleteSelection(); editNewline(); changed = true; }
     else if (ch === '\u007f' || ch === '\x08') {
@@ -703,7 +963,7 @@ function editKey(key) {
       changed = true;
     }
   }
-  if (changed) { edit.dirty = true; edit.confirmDiscard = false; ui.render(); }
+  if (changed) { edit.dirty = true; edit.confirmDiscard = false; complete.afterType(); ui.render(); }
 }
 
 function ensureEditVisible(listH, rightW) {
@@ -871,6 +1131,7 @@ function drawEditLine(raw, ctx, isCursor, w, li) {
   const th = currentTheme();
   if (range) hl = applySel(hl, range, th);
   hl = applyFind(hl, findRangesForLine(li), th);
+  hl = diagnose.applyDiag(hl, diagRangesForLine(li));
   if (!isCursor) return seal(sliceVis(hl, edit.colOff, w));
   const dc = editDispCol(raw, edit.col);
   const rel = dc - edit.colOff;
@@ -882,7 +1143,9 @@ function drawEditLine(raw, ctx, isCursor, w, li) {
 
 Object.assign(module.exports, {
   EDIT_MAX_SIZE, EDIT_MAX_LINES, LN_MODES, PAIRS, pairEnabled, editAutoClose,
-  editOpen, editSave, editExit,
+  editOpen, editNewEmptyTab, editSave, editExit,
+  findTab, persistActive, loadTab, switchTab, nextTab, closeTab,
+  tabEntries, tabIndexFromKey,
   editInsert, editBackspace, editDeleteForward, editNewline, editMove, editKey,
   ensureEditVisible, HL_MAX_LINE, expandTabs, editDispCol, sliceVis, seal,
   cheapStateScan, computeHlState, drawEditLine, editGutterWidth, editGutter,

@@ -21,6 +21,10 @@ const settings = require('./settings');
 const discord = require('./discord');
 const ui = require('./ui');
 const main = require('./main');
+const icons = require('./icons');
+const term = require('./term');
+const complete = require('./complete');
+const diagnose = require('./diagnose');
 
 module.exports = {
   // state
@@ -50,9 +54,16 @@ module.exports = {
   dialogKey: explorer.dialogKey,
   // editor
   editOpen: editor.editOpen,
+  editNewEmptyTab: editor.editNewEmptyTab,
   editKey: editor.editKey,
   editSave: editor.editSave,
   editExit: editor.editExit,
+  findTab: editor.findTab,
+  switchTab: editor.switchTab,
+  nextTab: editor.nextTab,
+  closeTab: editor.closeTab,
+  tabEntries: editor.tabEntries,
+  tabIndexFromKey: editor.tabIndexFromKey,
   sliceVis: editor.sliceVis,
   drawEditLine: editor.drawEditLine,
   computeHlState: editor.computeHlState,
@@ -105,6 +116,39 @@ module.exports = {
   effectiveClientId: discord.effectiveClientId,
   // ui
   render: ui.render,
+  drawTabRow: ui.drawTabRow,
+  // embedded terminal
+  termEnsure: term.termEnsure,
+  termOpen: term.termOpen,
+  termClose: term.termClose,
+  termToggle: term.termToggle,
+  termDispose: term.termDispose,
+  termKey: term.termKey,
+  termRun: term.termRun,
+  // autocomplete
+  cmpDismiss: complete.dismiss,
+  cmpIsOpen: complete.isOpen,
+  cmpView: complete.view,
+  cmpManual: complete.manual,
+  cmpAfterType: complete.afterType,
+  cmpPathItems: complete.pathItems,
+  cmpResolveImport: complete.resolveImport,
+  cmpParseExports: complete.parseExports,
+  // diagnostics
+  diagnose: diagnose.diagnose,
+  diagsForBuffer: diagnose.forBuffer,
+  // file-type icons
+  ICONS: icons.ICONS,
+  fileIcon: icons.fileIcon,
+  iconFor: icons.iconFor,
+  iconAnsi: icons.iconAnsi,
+  svgFor: icons.svgFor,
+  badgeFor: icons.badgeFor,
+  badgeAnsi: icons.badgeAnsi,
+  currentStyle: icons.currentStyle,
+  rowPrefix: icons.rowPrefix,
+  tabPrefix: icons.tabPrefix,
+  tabIcon: icons.tabIcon,
   // main
   main: main.main,
   onKey: main.onKey,

@@ -2,6 +2,7 @@
 const path = require('node:path');
 
 function langOf(file) {
+  if (!file) return null; // untitled tabs have no filename yet
   const ext = path.extname(file).toLowerCase().slice(1);
   if (!ext) {
     const base = path.basename(file).toLowerCase();

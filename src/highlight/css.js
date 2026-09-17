@@ -14,7 +14,8 @@ function cssRegex() {
     `|(\\b\\d[\\d.]*(?:${units})?|\\B\\.\\d+(?:${units})?)(?![\\w%])` +
     `|([\\w-]+)(?=\\s*\\()` +                    // functions
     `|(\\$[\\w-]+)` +                            // scss variables
-    `|([{}();:,.#>+~*\\[\\]=])`,                 // punctuation
+    `|([{}();:,.#>+~*\\[\\]=])` +               // punctuation
+    `|([A-Za-z_][\\w-]*)`,                      // bare words = values/variables (last)
     'g'
   );
   cssReCache.re = re;
@@ -35,8 +36,9 @@ function subCssSel(sel, th) {
 
 function cssTokenize(seg, th) {
   const re = cssRegex();
+  const vc = th.var || th.prop; // fallback keeps third-party themes working
   re.lastIndex = 0;
-  return seg.replace(re, (m, sel, at, pseudo, prop, num, fn, vr, pun) => {
+  return seg.replace(re, (m, sel, at, pseudo, prop, num, fn, vr, pun, va) => {
     if (sel) return subCssSel(sel, th);
     if (at) return `${th.kw}${at}${RESET}`;
     if (pseudo) return `${th.prop}${pseudo}${RESET}`;
@@ -45,6 +47,7 @@ function cssTokenize(seg, th) {
     if (fn) return `${th.fn}${fn}${RESET}`;
     if (vr) return `${th.prop}${vr}${RESET}`;
     if (pun) return `${th.pun}${pun}${RESET}`;
+    if (va) return `${vc}${va}${RESET}`;
     return m;
   });
 }
